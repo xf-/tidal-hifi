@@ -8,16 +8,45 @@ const statuses = require("./constants/statuses");
 const hotkeys = require("./scripts/hotkeys");
 const globalEvents = require("./constants/globalEvents");
 const notifier = require("node-notifier");
+const Player = require("mpris-service");
 const notificationPath = `${app.getPath("userData")}/notification.jpg`;
 let currentSong = "";
+
+let player = Player({
+  name: 'tifi-hifi',
+  identity: 'tifi-hifi',
+  supportedUriSchemes: ['file'],
+  supportedMimeTypes: ['audio/mpeg', 'audio/flac', 'audio/x-flac', 'application/ogg', 'audio/wav'],
+  supportedInterfaces: ['player'],
+  desktopEntry: 'tidal-hifi'
+});
+
+player.getPosition = function() {
+  return elements.getAttr('progressbar', 'aria-valuenow', 0) * 1000 * 1000;
+};
+
+// Events
+var events = ['raise', 'quit', 'next', 'previous', 'pause', 'playpause', 'stop', 'play', 'seek', 'position', 'open', 'volume', 'loopStatus', 'shuffle'];
+events.forEach(function (eventName) {
+  player.on(eventName, function () {
+    console.log('Event:', eventName, arguments);
+  });
+});
+
+player.on('quit', function () {
+  app.quit();
+});
+
 
 const elements = {
   play: '*[data-test="play"]',
   pause: '*[data-test="pause"]',
+  progressbar: '*[class^="progressBarWrapper"]',
   next: '*[data-test="next"]',
   previous: 'button[data-test="previous"]',
   title: '*[data-test^="footer-track-title"]',
   artists: '*[class^="mediaArtists"]',
+  album: '*[class^="playingFrom"]',
   home: '*[data-test="menu--home"]',
   back: '[class^="backwardButton"]',
   forward: '[class^="forwardButton"]',
@@ -55,6 +84,23 @@ const elements = {
   },
 
   /**
+   * Get the icon of the current song
+   */
+  getSongCover: function() {
+    const figure = this.get("media");
+    const regex = /https:[\S\/]+1280x1280\.jpg/gm;
+
+    if (figure) {
+      const mediaElement = figure.querySelector(this["image"]);
+      if (mediaElement) {
+        return regex.exec(mediaElement.srcset)[0];
+      }
+    }
+
+    return "";
+  },
+
+  /**
    * Shorthand function to get the text of a dom element
    * @param {*} key key in elements object to fetch
    */
@@ -62,6 +108,18 @@ const elements = {
     const element = this.get(key);
     return element ? element.textContent : "";
   },
+
+  /**
+   * Shorthand function to get the text of a dom element
+   * @param {*} key key in elements object to fetch
+   * @param attr
+   * @param defaultValue
+   */
+  getAttr: function(key, attr, defaultValue) {
+    const element = this.get(key);
+    return element ? (element.hasAttribute(attr) ? element.getAttribute(attr) : defaultValue) : defaultValue;
+  },
+
 
   /**
    * Shorthand function to click a dom element
@@ -151,6 +209,27 @@ function addHotKeys() {
   hotkeys.add("control+/", function() {
     ipcRenderer.send(globalEvents.showSettings);
   });
+
+
+  player.on('pause', function () {
+    elements.click("pause");
+  });
+
+  player.on('play', function () {
+    elements.click("play");
+  });
+
+  player.on('previous', function () {
+    elements.click("previous");
+  });
+
+  player.on('next', function () {
+    elements.click("next");
+  });
+
+  player.on('playpause', function () {
+    playPause();
+  });
 }
 
 /**
@@ -231,6 +310,7 @@ function updateStatus() {
 setInterval(function() {
   const title = elements.getText("title");
   const artists = elements.getText("artists");
+  const album = elements.getText("album");
   const songDashArtistTitle = `${title} - ${artists}`;
 
   updateStatus();
@@ -244,7 +324,7 @@ setInterval(function() {
 
       const options = {
         title,
-        message: artists,
+        message: artists
       };
       new Promise((resolve, reject) => {
         if (image.startsWith("http")) {
@@ -263,12 +343,23 @@ setInterval(function() {
       }).then(
         () => {
           ipcRenderer.send(globalEvents.updateInfo, options);
+          player.metadata = {
+            'mpris:length': elements.getAttr('progressbar', 'aria-valuemax', 1) * 1000 * 1000, // In microseconds
+            'mpris:artUrl': elements.getSongCover(),
+            'xesam:title': title,
+            'xesam:album': album,
+            'xesam:artist': [artists]
+          };
           store.get(settings.notifications) && notifier.notify(options);
         },
         () => {}
       );
     }
   }
+
+  player.seeked(elements.getAttr('progressbar', 'aria-valuenow', 1) * 1000 * 1000);
+  player.playbackStatus = !elements.get("play") ? Player.PLAYBACK_STATUS_PLAYING : Player.PLAYBACK_STATUS_PAUSED;
+
 }, 200);
 
 addHotKeys();
